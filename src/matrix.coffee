@@ -134,7 +134,7 @@ class Matrix extends Adapter
     @robot.logger.info "starting matrix adapter"
     client = sdk.createClient(process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org')
     client.login 'm.login.password',
-      user: @robot.name
+      user: process.env.HUBOT_MATRIX_USER || @robot.name
       password: process.env.HUBOT_MATRIX_PASSWORD
     , (err, data) =>
 
