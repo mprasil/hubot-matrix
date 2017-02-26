@@ -77,14 +77,6 @@ class Matrix extends Adapter
             url: imageURL
 
 
-  send: (envelope, lines...) ->
-    [..., last] = lines
-    if typeof last is 'function'
-      callback = lines.pop()
-    syn.eachSeries lines, (@handleURL envelope), ->
-      callback() if callback?
-
-
   sendText: (envelope, text, callback) ->
     @client.sendNotice(envelope.room.id, text).catch (err) =>
       if err.name == 'UnknownDeviceError'
@@ -95,7 +87,12 @@ class Matrix extends Adapter
 
   sendImage: (envelope, buffer, info, callback) ->
     try
-      @client.uploadContent(buffer, name: info.url, type: info.mimetype, rawResponse: false, onlyContentUri: true).done (content_uri) =>
+      @client.uploadContent(buffer,
+        name: info.url
+        type: info.mimetype
+        rawResponse: false
+        onlyContentUri: true
+      ).done (content_uri) =>
         @client.sendImageMessage(envelope.room.id, content_uri, info, info.url).catch (err) =>
           if err.name == 'UnknownDeviceError'
             @handleUnknownDevices err
@@ -104,6 +101,14 @@ class Matrix extends Adapter
       @robot.logger.info "image upload failed: #{error.message}"
     finally
       @robot.logger.info 'image sent'
+      callback() if callback?
+
+
+  send: (envelope, lines...) ->
+    [..., last] = lines
+    if typeof last is 'function'
+      callback = lines.pop()
+    syn.eachSeries lines, (@handleURL envelope), ->
       callback() if callback?
 
 
