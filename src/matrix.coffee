@@ -1,21 +1,28 @@
 try
-  {Robot,Adapter,TextMessage,User} = require 'hubot'
+  { Robot
+  , Adapter
+  , TextMessage } = require 'hubot'
 catch
-  prequire = require('parent-require')
-  {Robot,Adapter,TextMessage,User} = prequire 'hubot'
+  prequire = require 'parent-require'
+  { Robot
+  , Adapter
+  , TextMessage } = prequire 'hubot'
+
+{ LocalStorage } = require 'node-localstorage'
 
 sdk = require 'matrix-js-sdk'
-request = require 'request'
-sizeOf = require 'image-size'
+ne  = require 'needle'
+syn = require 'async'
+gm  = require 'gm'
+url = require 'url'
 
-unless localStorage?
-  {LocalStorage} = require('node-localstorage')
-  localStorage = new LocalStorage('./hubot-matrix.localStorage')
 
 class Matrix extends Adapter
   constructor: ->
     super
-    @robot.logger.info "Constructor"
+    @local_storage = new LocalStorage process.env.HUBOT_MATRIX_DATA || 'matrix-data'
+    @text = []
+
 
   handleUnknownDevices: (err) ->
     for stranger, devices of err.devices
@@ -23,95 +30,165 @@ class Matrix extends Adapter
         @robot.logger.info "Acknowledging #{stranger}'s device #{device}"
         @client.setDeviceKnown(stranger, device)
 
-  send: (envelope, strings...) ->
-    for str in strings
-      @robot.logger.info "Sending to #{envelope.room}: #{str}"
-      if /^(f|ht)tps?:\/\//i.test(str)
-        @sendURL envelope, str
-      else
-        @client.sendNotice(envelope.room, str).catch (err) =>
+
+  handleURL: (envelope) -> (line, done) =>
+    # supported image mime types
+    accepted = ['image/jpeg', 'image/png', 'image/tiff']
+
+
+    if not url.parse(line).hostname
+      return @sendText envelope, line, -> done()
+
+    # fetch headers
+    ne.head line, follow_max: 5, (err, res) =>
+      @robot.logger.info 'found url ' + line
+      if err?
+        @robot.logger.warning "headers download failed:\n#{err}"
+        return @sendText envelope, line, -> done()
+
+      mimetype = res.headers['content-type'].split(';')[0]
+      if not (mimetype in accepted)
+        @robot.logger.info 'url ignored'
+        return @sendText envelope, line, -> done()
+
+      @robot.logger.info 'found image: downloading...'
+
+      @getImage line, (buffer, info) =>
+        @sendImage envelope, buffer, info, -> done()
+
+
+  getImage: (imageURL, callback) ->
+    # process the image a bit
+    ne.get imageURL, follow_max: 5, (err, res, body) =>
+      gm(body)
+      .noProfile()
+      .quality(80)
+      .resize(360000,'@>')
+      .toBuffer (err, buffer) =>
+        @robot.logger.info 'image downloaded and processed'
+
+        gm(buffer).identify "%m %w %h", (err, format) ->
+          [type, width, height] = format.split ' '
+          callback buffer,
+            mimetype: "image/" + type.toLowerCase()
+            w: width
+            h: height
+            size: buffer.length
+            url: imageURL
+
+
+  send: (envelope, lines...) ->
+    [..., last] = lines
+    if typeof last is 'function'
+      callback = lines.pop()
+    syn.eachSeries lines, (@handleURL envelope), ->
+      callback() if callback?
+
+
+  sendText: (envelope, text, callback) ->
+    @client.sendNotice(envelope.room.id, text).catch (err) =>
+      if err.name == 'UnknownDeviceError'
+        @handleUnknownDevices err
+        @client.sendNotice(envelope.room.id, text)
+    callback() if callback?
+
+
+  sendImage: (envelope, buffer, info, callback) ->
+    try
+      @client.uploadContent(buffer, name: info.url, type: info.mimetype, rawResponse: false, onlyContentUri: true).done (content_uri) =>
+        @client.sendImageMessage(envelope.room.id, content_uri, info, info.url).catch (err) =>
           if err.name == 'UnknownDeviceError'
             @handleUnknownDevices err
-            @client.sendNotice(envelope.room, str)
+            @client.sendImageMessage(envelope.room.id, content_uri, info, info.url)
+    catch error
+      @robot.logger.info "image upload failed: #{error.message}"
+    finally
+      @robot.logger.info 'image sent'
+      callback() if callback?
 
-  emote: (envelope, strings...) ->
-    for str in strings
-      @client.sendEmoteMessage(envelope.room, str).catch (err) =>
+
+  emote: (envelope, lines...) ->
+    for line in lines
+      @client.sendEmoteMessage(envelope.room.id, line).catch (err) =>
         if err.name == 'UnknownDeviceError'
           @handleUnknownDevices err
-          @client.sendEmoteMessage(envelope.room, str)
+          @client.sendEmoteMessage(envelope.room.id, line)
 
-  reply: (envelope, strings...) ->
-    for str in strings
-      @send envelope, "#{envelope.user.name}: #{str}"
 
-  topic: (envelope, strings...) ->
-    for str in strings
-      @client.sendStateEvent envelope.room, "m.room.topic", {
-        topic: str
-      }, ""
+  reply: (envelope, lines...) ->
+    for line in lines
+      @send envelope, "#{envelope.user.name}: #{line}"
 
-  sendURL: (envelope, url) ->
-    @robot.logger.info "Downloading #{url}"
-    request url: url, encoding: null, (error, response, body) =>
-      if error
-        @robot.logger.info "Request error: #{JSON.stringify error}"
-      else if response.statusCode == 200
-        try
-          dims = sizeOf body
-          @robot.logger.info "Image has dimensions #{JSON.stringify dims}, size #{body.length}"
-          dims.type = 'jpeg' if dims.type == 'jpg'
-          info = { mimetype: "image/#{dims.type}", h: dims.height, w: dims.width, size: body.length }
-          @client.uploadContent(body, name: url, type: info.mimetype, rawResponse: false, onlyContentUri: true).done (content_uri) =>
-            @client.sendImageMessage(envelope.room, content_uri, info, url).catch (err) =>
-              if err.name == 'UnknownDeviceError'
-                @handleUnknownDevices err
-                @client.sendImageMessage(envelope.room, content_uri, info, url)
-        catch error
-          @robot.logger.info error.message
-          @send envelope, " #{url}"
+
+  topic: (envelope, lines...) ->
+    for line in lines
+      @client.sendStateEvent envelope.room.id, "m.room.topic", topic: line, ""
+
 
   run: ->
-    @robot.logger.info "Run #{@robot.name}"
+    @robot.logger.info "starting matrix adapter"
     client = sdk.createClient(process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org')
-    client.login 'm.login.password', {
+    client.login 'm.login.password',
       user: @robot.name
       password: process.env.HUBOT_MATRIX_PASSWORD
-    }, (err, data) =>
-        if err
-            @robot.logger.error err
-            return
-        @user_id = data.user_id
-        @access_token = data.access_token
-        @device_id = data.device_id
-        @robot.logger.info "Logged in #{@user_id} on device #{@device_id}"
+    , (err, data) =>
+
+        return @robot.logger.error err if err?
+
+        @user_id       = data.user_id
+        @device_id     = @local_storage.getItem 'device_id'
+        @device_id     = data.device_id unless @device_id?
+        @access_token  = data.access_token
+
+        @local_storage.setItem 'device_id', @device_id
+
+        @robot.logger.info "logged in #{@user_id} on device #{@device_id}"
+
         @client = sdk.createClient
-            baseUrl: process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org'
-            accessToken: @access_token
-            userId: @user_id
-            deviceId: @device_id
-            sessionStore: new sdk.WebStorageSessionStore(localStorage)
+          baseUrl: process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org'
+          userId: @user_id
+          deviceId: @device_id
+          accessToken: @access_token
+          sessionStore: new sdk.WebStorageSessionStore(@local_storage)
+
         @client.on 'sync', (state, prevState, data) =>
-            switch state
-              when "PREPARED"
-                @robot.logger.info "Synced #{@client.getRooms().length} rooms"
-                @emit 'connected'
+          switch state
+            when "PREPARED"
+              @robot.logger.info "synced #{@client.getRooms().length} rooms"
+              @emit 'connected'
+
+        createUser = (user) =>
+          id: user.userId
+          name: user.name
+          avatar: user.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
+
         @client.on 'Room.timeline', (event, room, toStartOfTimeline) =>
-            if event.getType() == 'm.room.message' and toStartOfTimeline == false
-                @client.setPresence "online"
-                message = event.getContent()
-                name = event.getSender()
-                user = @robot.brain.userForId name
-                user.room = room.roomId
-                if user.name != @user_id
-                    @robot.logger.info "Received message: #{JSON.stringify message} in room: #{user.room}, from: #{user.name}."
-                    @receive new TextMessage user, message.body if message.msgtype == "m.text"
-                    @client.sendReadReceipt(event) if message.msgtype != "m.text" or message.body.indexOf(@robot.name) != -1
+          if event.getType() == 'm.room.message' and toStartOfTimeline == false
+            @client.setPresence "online"
+
+            message     = event.getContent()
+            user        = @robot.brain.userForId event.sender.userId
+            user.name   = event.sender.name
+            user.avatar = event.sender.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
+            user.room   =
+              id: room.roomId
+              name: room.name
+              private: room.getJoinedMembers().length == 2
+              members: room.getJoinedMembers().map createUser
+              invitees: room.getMembersWithMembership("invite").map createUser
+
+            if user.id != @user_id
+              @receive new TextMessage user, message.body if message.msgtype == "m.text"
+              if message.msgtype != "m.text" or message.body.indexOf(@robot.name) != -1
+                @client.sendReadReceipt(event)
+
         @client.on 'RoomMember.membership', (event, member) =>
-            if member.membership == 'invite' and member.userId == @user_id
-                @client.joinRoom(member.roomId).done =>
-                    @robot.logger.info "Auto-joined #{member.roomId}"
+          if member.membership == 'invite' and member.userId == @user_id
+            @client.joinRoom(member.roomId).done =>
+              @robot.logger.info "auto-joined #{member.roomId}"
+
         @client.startClient 0
 
+
 exports.use = (robot) ->
-  new Matrix robot
+  new Matrix robot # sentinel
