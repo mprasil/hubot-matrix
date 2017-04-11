@@ -105,7 +105,7 @@ class Matrix extends Adapter
 
 
   send: (envelope, lines...) ->
-    [..., last] = lines
+    last = lines[-1..][0]
     if typeof last is 'function'
       callback = lines.pop()
     syn.eachSeries lines, (@handleURL envelope), ->
