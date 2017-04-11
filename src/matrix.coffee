@@ -158,7 +158,7 @@ class Matrix extends Adapter
         return @robot.logger.error err if err?
 
         @user_id       = data.user_id
-        @device_id     = @local_storage.getItem 'device_id' || process.env.HUBOT_MATRIX_DEVICEID
+        @device_id     = process.env.HUBOT_MATRIX_DEVICEID || @local_storage.getItem 'device_id'
         @device_id     = data.device_id unless @device_id?
         @access_token  = data.access_token
 
