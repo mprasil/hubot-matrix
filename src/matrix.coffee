@@ -111,6 +111,24 @@ class Matrix extends Adapter
     syn.eachSeries lines, (@handleURL envelope), ->
       callback() if callback?
 
+  notification: (envelope, strings...) ->
+    for str in strings
+      @robot.logger.info "Sending to #{envelope.room}: #{str}"
+      @client.sendTextMessage(envelope.room, str).catch (err) =>
+        if err.name == 'UnknownDeviceError'
+          @handleUnknownDevices err
+          @client.sendTextMessage(envelope.room, str)
+
+  notificationHtml: (envelope, strings) ->
+    stringText = JSON.parse(JSON.stringify(strings)).string
+    stringHtml = JSON.parse(JSON.stringify(strings)).stringHtml
+    console.dir(strings)
+    console.dir([stringText, stringHtml])
+    @robot.logger.info "Sending to #{envelope.room}: #{stringText} #{stringHtml}"
+    @client.sendHtmlMessage(envelope.room, stringText, stringHtml).catch (err) =>
+      if err.name == 'UnknownDeviceError'
+        @handleUnknownDevices err
+        @client.sendHtmlMessage(envelope.room, stringText, stringHtml)
 
   emote: (envelope, lines...) ->
     for line in lines
@@ -118,7 +136,6 @@ class Matrix extends Adapter
         if err.name == 'UnknownDeviceError'
           @handleUnknownDevices err
           @client.sendEmoteMessage(envelope.room.id, line)
-
 
   reply: (envelope, lines...) ->
     for line in lines
