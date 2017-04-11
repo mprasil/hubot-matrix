@@ -13,7 +13,7 @@ catch
 sdk = require 'matrix-js-sdk'
 ne  = require 'needle'
 syn = require 'async'
-gm  = require 'gm'
+gm  = require('gm').subClass({imageMagick: true})
 url = require 'url'
 
 
