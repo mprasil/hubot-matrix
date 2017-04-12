@@ -146,19 +146,73 @@ class Matrix extends Adapter
     for line in lines
       @client.sendStateEvent envelope.room.id, "m.room.topic", topic: line, ""
 
+  post_login: ->
+    @client.on 'sync', (state, prevState, data) =>
+      switch state
+        when "PREPARED"
+          @robot.logger.info "synced #{@client.getRooms().length} rooms"
+          @emit 'connected'
+
+    createUser = (user) =>
+      id: user.userId
+      name: user.name
+      avatar: user.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
+
+    @client.on 'Room.timeline', (event, room, toStartOfTimeline) =>
+      if event.getType() == 'm.room.message' and toStartOfTimeline == false
+        @client.setPresence "online"
+
+        message     = event.getContent()
+        user        = @robot.brain.userForId event.sender.userId
+        user.name   = event.sender.name
+        user.avatar = event.sender.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
+        user.room   =
+          id: room.roomId
+          name: room.name
+          private: room.getJoinedMembers().length == 2
+          members: room.getJoinedMembers().map createUser
+          invitees: room.getMembersWithMembership("invite").map createUser
+
+        if user.id != @user_id
+          @receive new TextMessage user, message.body if message.msgtype == "m.text"
+          if message.msgtype != "m.text" or message.body.indexOf(@robot.name) != -1
+            @client.sendReadReceipt(event)
+
+    @client.on 'RoomMember.membership', (event, member) =>
+      if member.membership == 'invite' and member.userId == @user_id
+        @client.joinRoom(member.roomId).done =>
+          @robot.logger.info "auto-joined #{member.roomId}"
+
+    @client.startClient 0
 
   run: ->
     @robot.logger.info "starting matrix adapter"
-    client = sdk.createClient(process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org')
-    client.login 'm.login.password',
-      user: process.env.HUBOT_MATRIX_USER || @robot.name
-      password: process.env.HUBOT_MATRIX_PASSWORD
-    , (err, data) =>
+    if process.env.HUBOT_MATRIX_TOKEN and
+       process.env.HUBOT_MATRIX_DEVICEID and
+       process.env.HUBOT_MATRIX_ID
+        @user_id       = process.env.HUBOT_MATRIX_ID
+        @device_id     = process.env.HUBOT_MATRIX_DEVICEID
+        @access_token  = process.env.HUBOT_MATRIX_TOKEN
 
+        @client = sdk.createClient
+          baseUrl: process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org'
+          userId: @user_id
+          deviceId: @device_id
+          accessToken: @access_token
+          sessionStore: new sdk.WebStorageSessionStore(@local_storage)
+
+        @robot.logger.info "Connected as #{@user_id} on device #{@device_id}"
+        return @post_login()
+    else
+      client = sdk.createClient(process.env.HUBOT_MATRIX_HOST_SERVER || 'https://matrix.org')
+      client.login 'm.login.password',
+        user: process.env.HUBOT_MATRIX_USER || @robot.name
+        password: process.env.HUBOT_MATRIX_PASSWORD
+      , (error, data) =>
         return @robot.logger.error err if err?
 
         @user_id       = data.user_id
-        @device_id     = process.env.HUBOT_MATRIX_DEVICEID || @local_storage.getItem 'device_id'
+        @device_id     = @local_storage.getItem 'device_id'
         @device_id     = data.device_id unless @device_id?
         @access_token  = data.access_token
 
@@ -173,43 +227,7 @@ class Matrix extends Adapter
           accessToken: @access_token
           sessionStore: new sdk.WebStorageSessionStore(@local_storage)
 
-        @client.on 'sync', (state, prevState, data) =>
-          switch state
-            when "PREPARED"
-              @robot.logger.info "synced #{@client.getRooms().length} rooms"
-              @emit 'connected'
-
-        createUser = (user) =>
-          id: user.userId
-          name: user.name
-          avatar: user.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
-
-        @client.on 'Room.timeline', (event, room, toStartOfTimeline) =>
-          if event.getType() == 'm.room.message' and toStartOfTimeline == false
-            @client.setPresence "online"
-
-            message     = event.getContent()
-            user        = @robot.brain.userForId event.sender.userId
-            user.name   = event.sender.name
-            user.avatar = event.sender.getAvatarUrl @client.baseUrl, 120, 120, allowDefault: false
-            user.room   =
-              id: room.roomId
-              name: room.name
-              private: room.getJoinedMembers().length == 2
-              members: room.getJoinedMembers().map createUser
-              invitees: room.getMembersWithMembership("invite").map createUser
-
-            if user.id != @user_id
-              @receive new TextMessage user, message.body if message.msgtype == "m.text"
-              if message.msgtype != "m.text" or message.body.indexOf(@robot.name) != -1
-                @client.sendReadReceipt(event)
-
-        @client.on 'RoomMember.membership', (event, member) =>
-          if member.membership == 'invite' and member.userId == @user_id
-            @client.joinRoom(member.roomId).done =>
-              @robot.logger.info "auto-joined #{member.roomId}"
-
-        @client.startClient 0
+        return @post_login()
 
 
 exports.use = (robot) ->

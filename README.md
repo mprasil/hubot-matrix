@@ -17,6 +17,16 @@ This is a [Hubot](http://hubot.github.com/) adapter for the [Matrix](https://mat
 | HUBOT_MATRIX_USER         | `robot.name`       | account username                          |
 | HUBOT_MATRIX_PASSWORD     | N/A                | account password                          |
 
+You can provide following parameters to always use the same device.
+
+| Variable                  | Default value      | Description                               |
+|---------------------------|--------------------|-------------------------------------------|
+| HUBOT_MATRIX_ID           | N/A                | account Matrix ID (eg. @hubot:matrix.org) |
+| HUBOT_MATRIX_DEVICEID     | N/A                | ID of device to use                       |
+| HUBOT_MATRIX_TOKEN        | N/A                | Access token                              |
+
+
+
 ### License
 Copyright 2017 David A Roberts
 
